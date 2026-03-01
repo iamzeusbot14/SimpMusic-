@@ -53,14 +53,16 @@ jobs:
             pkgrel=1
             arch=('x86_64')
             depends=('java-runtime>=21' 'gstreamer' 'glu')
+            # Pulling specifically from the main branch
             source=('SimpMusic::git+https://github.com/maxrave-dev/SimpMusic.git#branch=main')
             md5sums=('SKIP')
 
             build() {
-              # FIX: Use \$srcdir directly without the leading slash
-              cd \"\$srcdir/SimpMusic\"
+              # PRO FIX: We use a relative path to the cloned folder 
+              # to avoid any absolute path variable bugs inside Docker.
+              cd \"\$srcdir/SimpMusic\" || cd SimpMusic
               
-              # Enable Full Build flavor from official repo
+              # Enable 'isFullBuild' to match official Red Hat workflow
               echo \"isFullBuild=true\" >> gradle.properties
               
               chmod +x gradlew
@@ -68,21 +70,26 @@ jobs:
             }
 
             package() {
-              cd \"\$srcdir/SimpMusic\"
-              # Search for binary in the build binaries output
+              cd \"\$srcdir/SimpMusic\" || cd SimpMusic
+              # Search for the executable binary in the build binaries output
               BINARY_PATH=\$(find . -type f -executable -name \"SimpMusic\" | grep \"binaries\" | head -n 1)
-              if [ -z \"\$BINARY_PATH\" ]; then exit 1; fi
+              
+              if [ -z \"\$BINARY_PATH\" ]; then 
+                echo \"Binary not found\!\"
+                exit 1
+              fi
+              
               install -Dm755 \"\$BINARY_PATH\" \"\$pkgdir/usr/bin/simpmusic\"
             }
           EOF
             
-            # Build the package as non-root
+            # Build the package as the non-root 'builder' user
             su builder -c 'makepkg -fc --noconfirm'
           " 2>&1 | tee build_log.txt
           
-          # Critical Check: Verify the file exists before finishing
+          # Verify the .zst package exists before continuing
           if [[ ! -f $(ls *.pkg.tar.zst | head -n 1) ]]; then
-            echo "Build failed to produce package. See build_log.txt"
+            echo "Build failed to produce Arch package. Check build_log.txt"
             exit 1
           fi
 
@@ -98,6 +105,7 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
+          # Find and upload the .zst file
           ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
           curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
                -F caption="📦 *Artifact: $PROJECT_NAME (Arch)*%0A⏱️ Duration: \`${DURATION}m ${SEC_REM}s\`%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
@@ -107,7 +115,7 @@ jobs:
       - name: ❌ Failure Handling
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A❌ *Result:* Compilation error\. Logs attached below\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A❌ *Result:* Compilation error occurred\. Logs attached below\."
           
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
