@@ -1,0 +1,82 @@
+name: SimpMusic Arch Pro Builder
+on:
+  workflow_dispatch: # Manual Trigger
+
+jobs:
+  build_arch:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TARGET_URL: "https://github.com/maxrave-dev/SimpMusic.git"
+    
+    steps:
+      - name: 🚀 Start & Notify Telegram
+        id: init
+        run: |
+          MSG="🚀 *SimpMusic Arch Build Started*%0A\[░░░░░░░░░░░░░░░░░░░░\] 0%0A*Status:* Initializing Arch Linux Container\.\.\."
+          RES=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+            -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
+          echo "MSG_ID=$(echo $RES | jq '.result.message_id')" >> $GITHUB_ENV
+
+      - name: 📥 Stealth Clone
+        run: |
+          MSG="📥 *Fetching Source*%0A\[▓▓▓░░░░░░░░░░░░░░░░░\] 15%0A*Status:* Cloning SimpMusic from GitHub\.\.\."
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
+          git clone --depth 1 $TARGET_URL src
+
+      - name: 🏗️ Arch Linux Build (Makepkg)
+        run: |
+          MSG="🏗️ *Compiling Arch Package*%0A\[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%0A*Status:* Running Makepkg \(Java 17\)\.\.\."
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
+
+          # Use official Arch Linux Docker image
+          docker run --rm -v $PWD:/workspace -w /workspace archlinux:latest /bin/bash -c "
+            # 1. Setup Environment
+            pacman -Syu --noconfirm base-devel git jdk17-openjdk
+            useradd -m builder && chown -R builder /workspace
+            
+            # 2. Create PKGBUILD on the fly
+            cat <<EOF > PKGBUILD
+            pkgname=simpmusic-git
+            pkgver=$(date +%Y%m%d)
+            pkgrel=1
+            pkgdesc='SimpMusic for Arch Linux'
+            arch=('x86_64')
+            depends=('java-runtime>=17' 'gstreamer' 'hicolor-icon-theme')
+            build() {
+              cd src
+              ./gradlew :desktop:packageReleaseDistributionForCurrentOS
+            }
+            package() {
+              cd src
+              install -Dm755 build/compose/binaries/main/app/SimpMusic \"\$pkgdir/usr/bin/simpmusic\"
+            }
+          EOF
+            
+            # 3. Build as non-root user
+            su builder -c 'makepkg -s --noconfirm'
+          "
+
+      - name: ✅ Success & Upload
+        if: success()
+        run: |
+          MSG="✅ *Arch Build Complete\!*%0A\[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%0A*Status:* Uploading .zst to Telegram\.\.\."
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
+          
+          # Find the generated Arch package
+          ZST_FILE=$(ls *.pkg.tar.zst)
+          curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
+               -F caption="📦 *SimpMusic Arch Linux Build*%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
+               -F "parse_mode=MarkdownV2" \
+               "https://api.telegram.org/bot$TOKEN/sendDocument"
+
+      - name: ❌ Failure Alert
+        if: failure() || cancelled()
+        run: |
+          MSG="🚨 *BUILD FAILED OR CANCELLED*%0ACheck GitHub Actions logs for details\."
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
