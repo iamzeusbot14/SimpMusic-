@@ -9,7 +9,8 @@ jobs:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       PROJECT_NAME: "SimpMusic"
-      GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
+      # Maximum possible memory for a standard GitHub runner
+      GRADLE_OPTS: "-Xmx6g -XX:MaxMetaspaceSize=1g -Dorg.gradle.jvmargs='-Xmx6g -XX:+HeapDumpOnOutOfMemoryError' -Dorg.gradle.daemon=false -Dorg.gradle.parallel=false"
     
     steps:
       - name: 🚀 Start & Notify Telegram
@@ -39,16 +40,23 @@ jobs:
 
       - name: 🏗️ Build Android APK
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling Android APK\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling Android Only\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # PRO FIX: Ensure SDK path is known to Gradle
+          # 1. Setup Environment Variables
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           echo "isFullBuild=true" >> gradle.properties
           
+          # 2. Fix potential namespace issues in Multiplatform
           chmod +x gradlew
-          ./gradlew clean :composeApp:assembleRelease --stacktrace > build_log.txt 2>&1
+          
+          # 3. Execute build with strict exclusions to save memory
+          # We use -x to skip desktop and web tasks that often cause the crash
+          ./gradlew clean :composeApp:assembleRelease \
+            -x :composeApp:desktopJar \
+            -x :composeApp:wasmJsBrowserDistribution \
+            --stacktrace > build_log.txt 2>&1
 
       - name: 🔐 Process Artifact & MD5
         if: success()
@@ -72,20 +80,18 @@ jobs:
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
-      - name: ❌ Failure & Error Snippet
+      - name: ❌ Failure & Smart Log
         if: failure()
         run: |
-          # Extract the last 20 lines of the error to show in Telegram
-          ERROR_SNIPPET=$(tail -n 20 build_log.txt | sed 's/[^a-zA-Z0-9 ]/ /g')
-          
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A%0A*Quick Error Snippet:*%0A\`\`\`%0A$ERROR_SNIPPET%0A\`\`\`"
-          
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A❌ *Check the log file below\.*"
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
           if [ -f build_log.txt ]; then
-            curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
-                 -F caption="📄 *Full Build Log: $RUN_ID*" \
+            # Clean log of any non-ASCII characters that break Telegram
+            tr -cd '\11\12\15\40-\176' < build_log.txt > clean_log.txt
+            curl -F "chat_id=$CHAT_ID" -F document=@"clean_log.txt" \
+                 -F caption="📄 *Full Error Log: $RUN_ID*" \
                  -F "parse_mode=MarkdownV2" \
                  "https://api.telegram.org/bot$TOKEN/sendDocument"
           fi
