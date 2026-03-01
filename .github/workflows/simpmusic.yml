@@ -15,31 +15,26 @@ jobs:
         id: init_step
         run: |
           START_TIME=$(date +%s)
-          USER="${{ github.actor }}"
           RUN_ID="${{ github.run_id }}"
           
-          # Initial Telegram Message
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Preparing Arch Container\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Initializing Arch Linux\.\.\."
           
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
           
           MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')
-          
-          # Save to Env for subsequent steps
           echo "START_TIME=$START_TIME" >> $GITHUB_ENV
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
           echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
 
       - name: 🏗️ Arch Linux Build
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Exporting Libs \+ Compiling\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling \(Java 21 \+ Full Build\)\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # Use official Arch Linux Docker container
+          # Run inside official Arch container
           docker run --rm -v $PWD:/workspace -w /workspace archlinux:latest /bin/bash -c "
-            # 1. Install Java 21 + UI Dependencies
             pacman -Syu --noconfirm base-devel git jdk21-openjdk gstreamer glu hicolor-icon-theme libxtst libx11
             useradd -m builder && chown -R builder /workspace
             
@@ -53,69 +48,66 @@ jobs:
             md5sums=('SKIP')
 
             build() {
-              cd \"\$srcdir/SimpMusic\"
-              # Match developer's original build flavor
+              # ULTIMATE FIX: Dynamically find the SimpMusic folder inside src
+              cd \"\$srcdir\"
+              TARGET_DIR=\$(find . -maxdepth 2 -type d -name \"SimpMusic\" | head -n 1)
+              cd \"\$TARGET_DIR\"
+              
+              # Set Full Build properties
               echo \"isFullBuild=true\" >> gradle.properties
               chmod +x gradlew
-              # Exporting library definitions is required for this repo
+              
+              # Exporting definitions is required for the 'About' page
               ./gradlew exportLibraryDefinitions
               ./gradlew :composeApp:packageReleaseDistributionForCurrentOS
             }
 
             package() {
-              cd \"\$srcdir/SimpMusic\"
-              # Dynamic search for the executable
+              cd \"\$srcdir\"
+              TARGET_DIR=\$(find . -maxdepth 2 -type d -name \"SimpMusic\" | head -n 1)
+              cd \"\$TARGET_DIR\"
+              
+              # Find the binary in the deep build tree
               BINARY_PATH=\$(find . -type f -executable -name \"SimpMusic\" | grep \"binaries\" | head -n 1)
-              if [ -z \"\$BINARY_PATH\" ]; then exit 1; fi
               install -Dm755 \"\$BINARY_PATH\" \"\$pkgdir/usr/bin/simpmusic\"
             }
           EOF
             
+            # Execute build as non-root
             su builder -c 'makepkg -fc --noconfirm'
           " 2>&1 | tee build_log.txt
           
-          # Verification check
+          # Check for success
           if [[ ! -f $(ls *.pkg.tar.zst | head -n 1) ]]; then
-            echo "Error: No package generated. Check the build_log.txt"
+            echo "Build failed to produce .zst file."
             exit 1
           fi
 
-      - name: 🔐 Generate MD5
-        if: success()
-        run: |
-          ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
-          MD5_SUM=$(md5sum "$ZST_FILE" | awk '{ print $1 }')
-          echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
-
-      - name: ✅ Success & Delivery
+      - name: 🔐 Generate MD5 & Finalize
         if: success()
         run: |
           END_TIME=$(date +%s)
           DURATION=$(( (END_TIME - START_TIME) / 60 ))
-          SEC_REM=$(( (END_TIME - START_TIME) % 60 ))
+          ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
+          MD5_SUM=$(md5sum "$ZST_FILE" | awk '{ print $1 }')
           
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Build Finished\!*%0A⏱️ *Time:* \`${DURATION}m ${SEC_REM}s\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
-          
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Finished Successfully\!*%0A⏱️ *Time:* \`${DURATION}m\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
           curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
-               -F caption="📦 *Artifact: $PROJECT_NAME*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
+               -F caption="🎁 *SimpMusic Arch Package*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
-      - name: ❌ Failure Notification
+      - name: 🚨 Failure Notification
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *FAILED\!*%0A❌ *Action:* Check the log file below for errors\."
-          
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *FAILED\!*%0A❌ *Action:* Error logs sent below\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          if [ -f build_log.txt ]; then
-            curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
-                 -F caption="📄 *Logs for Build ID: $RUN_ID*" \
+          [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
+                 -F caption="📄 *Build Log: $RUN_ID*" \
                  -F "parse_mode=MarkdownV2" \
                  "https://api.telegram.org/bot$TOKEN/sendDocument"
-          fi
