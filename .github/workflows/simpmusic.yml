@@ -42,21 +42,28 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # FIX: printf ensures newlines (\n) so properties don't merge into 'trueorg.gradle'
-          printf "sdk.dir=$ANDROID_SDK_ROOT\n" > local.properties
-          printf "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g\n" >> gradle.properties
-          printf "org.gradle.daemon=false\n" >> gradle.properties
-          printf "org.gradle.configuration-cache=false\n" >> gradle.properties
-          printf "isFullBuild=true\n" >> gradle.properties
+          # PRO FIX: Use HEREDOC to ensure perfectly formatted properties
+          cat <<EOF > local.properties
+          sdk.dir=$ANDROID_SDK_ROOT
+          EOF
+
+          cat <<EOF > gradle.properties
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g
+          org.gradle.daemon=false
+          org.gradle.configuration-cache=false
+          isFullBuild=true
+          android.useAndroidX=true
+          android.enableJetifier=true
+          EOF
           
           chmod +x gradlew
-          # Execute debug build with the syntax fix
+          # Run build and capture everything
           ./gradlew :composeApp:assembleDebug --stacktrace > build_log.txt 2>&1 || touch BUILD_FAILED
 
       - name: 🔐 Process Artifact & MD5
         run: |
           APK_PATH=$(find . -name "*.apk" | grep "debug" | head -n 1)
-          if [ ! -z "$APK_PATH" ]; then
+          if [ -n "$APK_PATH" ]; then
             cp "$APK_PATH" SimpMusic_Build_${{ env.RUN_ID }}.apk
             MD5_SUM=$(md5sum SimpMusic_Build_${{ env.RUN_ID }}.apk | awk '{ print $1 }')
             echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
@@ -81,9 +88,9 @@ jobs:
         if: always()
         run: |
           if [ "$APK_EXISTS" != "true" ]; then
-            MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Build FAILED\!*%0A❌ *Full Log Attached Below\.*"
+            MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Build FAILED\!*%0A❌ *See the logs below for the fix\.*"
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
               -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
             
-            [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" -F caption="📄 Log $RUN_ID" "https://api.telegram.org/bot$TOKEN/sendDocument"
+            [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" -F caption="📄 Error Log: $RUN_ID" "https://api.telegram.org/bot$TOKEN/sendDocument"
           fi
