@@ -1,9 +1,9 @@
-name: SimpMusic Arch Pro Builder
+name: SimpMusic Android Pro Builder
 on:
   workflow_dispatch:
 
 jobs:
-  build_arch:
+  build_android:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -12,102 +12,73 @@ jobs:
     
     steps:
       - name: 🚀 Start & Notify Telegram
-        id: init_step
         run: |
           START_TIME=$(date +%s)
           RUN_ID="${{ github.run_id }}"
-          
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Initializing Arch Linux\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Setting up Android SDK\.\.\."
           
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
           
-          MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')
+          echo "MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')" >> $GITHUB_ENV
           echo "START_TIME=$START_TIME" >> $GITHUB_ENV
-          echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
           echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
 
-      - name: 🏗️ Arch Linux Build
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        with:
+          repository: 'maxrave-dev/SimpMusic'
+          ref: 'main'
+          submodules: 'recursive'
+
+      - name: ☕ Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'zulu'
+          cache: 'gradle'
+
+      - name: 🏗️ Build Android APK
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling \(Java 21 \+ Full Build\)\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling APK\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # Run inside official Arch container
-          docker run --rm -v $PWD:/workspace -w /workspace archlinux:latest /bin/bash -c "
-            pacman -Syu --noconfirm base-devel git jdk21-openjdk gstreamer glu hicolor-icon-theme libxtst libx11
-            useradd -m builder && chown -R builder /workspace
-            
-            cat <<EOF > PKGBUILD
-            pkgname=simpmusic-git
-            pkgver=\$(date +%Y%m%d)
-            pkgrel=1
-            arch=('x86_64')
-            depends=('java-runtime>=21' 'gstreamer' 'glu' 'libxtst' 'libx11')
-            source=('SimpMusic::git+https://github.com/maxrave-dev/SimpMusic.git#branch=main')
-            md5sums=('SKIP')
-
-            build() {
-              # ULTIMATE FIX: Dynamically find the SimpMusic folder inside src
-              cd \"\$srcdir\"
-              TARGET_DIR=\$(find . -maxdepth 2 -type d -name \"SimpMusic\" | head -n 1)
-              cd \"\$TARGET_DIR\"
-              
-              # Set Full Build properties
-              echo \"isFullBuild=true\" >> gradle.properties
-              chmod +x gradlew
-              
-              # Exporting definitions is required for the 'About' page
-              ./gradlew exportLibraryDefinitions
-              ./gradlew :composeApp:packageReleaseDistributionForCurrentOS
-            }
-
-            package() {
-              cd \"\$srcdir\"
-              TARGET_DIR=\$(find . -maxdepth 2 -type d -name \"SimpMusic\" | head -n 1)
-              cd \"\$TARGET_DIR\"
-              
-              # Find the binary in the deep build tree
-              BINARY_PATH=\$(find . -type f -executable -name \"SimpMusic\" | grep \"binaries\" | head -n 1)
-              install -Dm755 \"\$BINARY_PATH\" \"\$pkgdir/usr/bin/simpmusic\"
-            }
-          EOF
-            
-            # Execute build as non-root
-            su builder -c 'makepkg -fc --noconfirm'
-          " 2>&1 | tee build_log.txt
+          # Enable Full Build flavor for all features
+          echo "isFullBuild=true" >> gradle.properties
           
-          # Check for success
-          if [[ ! -f $(ls *.pkg.tar.zst | head -n 1) ]]; then
-            echo "Build failed to produce .zst file."
-            exit 1
-          fi
+          chmod +x gradlew
+          ./gradlew :composeApp:assembleRelease --stacktrace
 
-      - name: 🔐 Generate MD5 & Finalize
+      - name: 🔐 Process Artifact & MD5
+        if: success()
+        run: |
+          # Locate the APK
+          APK_PATH=$(find composeApp/build/outputs/apk/release -name "*.apk" | head -n 1)
+          cp "$APK_PATH" SimpMusic_Release.apk
+          
+          # Generate MD5
+          MD5_SUM=$(md5sum SimpMusic_Release.apk | awk '{ print $1 }')
+          echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
+
+      - name: ✅ Success & Delivery
         if: success()
         run: |
           END_TIME=$(date +%s)
           DURATION=$(( (END_TIME - START_TIME) / 60 ))
-          ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
-          MD5_SUM=$(md5sum "$ZST_FILE" | awk '{ print $1 }')
           
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Finished Successfully\!*%0A⏱️ *Time:* \`${DURATION}m\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Android Build Finished\!*%0A⏱️ *Time:* \`${DURATION}m\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
-               -F caption="🎁 *SimpMusic Arch Package*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
+          curl -F "chat_id=$CHAT_ID" -F document=@"SimpMusic_Release.apk" \
+               -F caption="📱 *SimpMusic Android APK*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
-      - name: 🚨 Failure Notification
+      - name: ❌ Failure Notification
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *FAILED\!*%0A❌ *Action:* Error logs sent below\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A❌ *Action:* Check GitHub logs for Gradle errors\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
-          
-          [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
-                 -F caption="📄 *Build Log: $RUN_ID*" \
-                 -F "parse_mode=MarkdownV2" \
-                 "https://api.telegram.org/bot$TOKEN/sendDocument"
