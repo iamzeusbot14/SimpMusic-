@@ -15,7 +15,7 @@ jobs:
         run: |
           START_TIME=$(date +%s)
           RUN_ID="${{ github.run_id }}"
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Environment Setup\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Setup Check\.\.\."
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
           echo "MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')" >> $GITHUB_ENV
@@ -29,35 +29,39 @@ jobs:
           ref: 'main'
           submodules: 'recursive'
 
-      - name: ☕ Setup Java 21
+      - name: ☕ Setup Java 17
+        # Rollback to 17 for maximum compatibility with existing AGP versions [cite: 8]
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: '17'
           distribution: 'zulu'
           cache: 'gradle'
 
       - name: 🏗️ Build Android APK
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling Clean APK\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling via Wrapper\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # PRO FIX: Use HEREDOC to ensure perfectly formatted properties
+          # Fix syntax corruption by using HEREDOC for clean newlines 
           cat <<EOF > local.properties
           sdk.dir=$ANDROID_SDK_ROOT
           EOF
 
+          # Ensure every property is on its own line to prevent parsing errors [cite: 5]
           cat <<EOF > gradle.properties
           org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g
           org.gradle.daemon=false
-          org.gradle.configuration-cache=false
-          isFullBuild=true
+          org.gradle.parallel=true
           android.useAndroidX=true
           android.enableJetifier=true
+          isFullBuild=true
           EOF
           
+          # Force execution rights for the repo's wrapper
           chmod +x gradlew
-          # Run build and capture everything
+          
+          # Execute using the local wrapper to avoid Gradle 9.0/8.14 issues 
           ./gradlew :composeApp:assembleDebug --stacktrace > build_log.txt 2>&1 || touch BUILD_FAILED
 
       - name: 🔐 Process Artifact & MD5
@@ -75,12 +79,12 @@ jobs:
         run: |
           END_TIME=$(date +%s)
           DURATION=$(( (END_TIME - START_TIME) / 60 ))
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Android Build Finished\!*%0A⏱️ *Time:* \`${DURATION}m\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Build Success\!*%0A⏱️ *Time:* \`${DURATION}m\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
           curl -F "chat_id=$CHAT_ID" -F document=@"SimpMusic_Build_${{ env.RUN_ID }}.apk" \
-               -F caption="📱 *SimpMusic Android APK*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`${{ env.MD5_SUM }}\`" \
+               -F caption="📱 *SimpMusic APK*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`${{ env.MD5_SUM }}\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
@@ -88,9 +92,9 @@ jobs:
         if: always()
         run: |
           if [ "$APK_EXISTS" != "true" ]; then
-            MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Build FAILED\!*%0A❌ *See the logs below for the fix\.*"
+            MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Build FAILED\!*%0A❌ *Full Log Attached\.*"
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
               -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
             
-            [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" -F caption="📄 Error Log: $RUN_ID" "https://api.telegram.org/bot$TOKEN/sendDocument"
+            [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" -F caption="📄 Log $RUN_ID" "https://api.telegram.org/bot$TOKEN/sendDocument"
           fi
