@@ -9,7 +9,6 @@ jobs:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       PROJECT_NAME: "SimpMusic"
-      GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=false"
     
     steps:
       - name: 🚀 Start & Notify Telegram
@@ -39,27 +38,31 @@ jobs:
 
       - name: 🏗️ Build Android APK
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Investigation Mode\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Safe-Mode Compiling\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-          echo "org.gradle.configuration-cache=false" >> gradle.properties
-          
+          # 1. FIX: Convert line endings and ensure execution rights
+          sudo apt-get install -y dos2unix
+          dos2unix gradlew
           chmod +x gradlew
-          # We use '|| true' to ensure the script doesn't stop immediately on error
-          # This allows us to capture the log and file list
-          ./gradlew :composeApp:assembleDebug --stacktrace > build_log.txt 2>&1 || touch BUILD_FAILED
           
-          # List all files to see where the APK went
-          find . -name "*.apk" > file_list.txt
+          # 2. Setup Properties
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          echo "org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=1g" >> gradle.properties
+          echo "org.gradle.daemon=false" >> gradle.properties
+          echo "isFullBuild=true" >> gradle.properties
+
+          # 3. Build with log capture
+          ./gradlew :composeApp:assembleDebug --no-daemon --stacktrace > build_log.txt 2>&1 || touch BUILD_FAILED
 
       - name: 🔐 Process Artifact & MD5
         run: |
           APK_PATH=$(find . -name "*.apk" | grep "debug" | head -n 1)
           if [ ! -z "$APK_PATH" ]; then
             cp "$APK_PATH" SimpMusic_Build_${{ env.RUN_ID }}.apk
-            md5sum SimpMusic_Build_${{ env.RUN_ID }}.apk | awk '{ print $1 }' > md5.txt
+            MD5_SUM=$(md5sum SimpMusic_Build_${{ env.RUN_ID }}.apk | awk '{ print $1 }')
+            echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
             echo "APK_EXISTS=true" >> $GITHUB_ENV
           fi
 
@@ -68,26 +71,22 @@ jobs:
         run: |
           END_TIME=$(date +%s)
           DURATION=$(( (END_TIME - START_TIME) / 60 ))
-          MD5_SUM=$(cat md5.txt)
           MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Android Build Finished\!*%0A⏱️ *Time:* \`${DURATION}m\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
           curl -F "chat_id=$CHAT_ID" -F document=@"SimpMusic_Build_${{ env.RUN_ID }}.apk" \
-               -F caption="📱 *SimpMusic Android APK*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`" \
+               -F caption="📱 *SimpMusic Android APK*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`${{ env.MD5_SUM }}\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
       - name: ❌ Failure / Final Log Delivery
         if: always()
         run: |
-          # If the APK wasn't found, notify failure
           if [ "$APK_EXISTS" != "true" ]; then
-            MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Build FAILED\!*%0A❌ *Logs sent below\.*"
+            MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Build FAILED\!*%0A❌ *Full Log Attached\.*"
             curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
               -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
+            
+            [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" -F caption="📄 Log $RUN_ID" "https://api.telegram.org/bot$TOKEN/sendDocument"
           fi
-          
-          # Always send logs and file list so we can see what's happening
-          [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" -F caption="📄 Log $RUN_ID" "https://api.telegram.org/bot$TOKEN/sendDocument"
-          [ -f file_list.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"file_list.txt" -F caption="📂 File List $RUN_ID" "https://api.telegram.org/bot$TOKEN/sendDocument"
