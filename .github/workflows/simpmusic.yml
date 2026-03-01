@@ -12,17 +12,26 @@ jobs:
     
     steps:
       - name: 🚀 Start & Notify Telegram
+        id: init_step
         run: |
           START_TIME=$(date +%s)
           USER="${{ github.actor }}"
           RUN_ID="${{ github.run_id }}"
           
+          # Escaping dots and dashes for MarkdownV2 stability
           MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚀 *Build Triggered* \(branch: \`main\`\)%0A──────────────────%0A👤 *User:* \`$USER\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25"
           
+          # Capture clean Message ID using jq -r
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
           
           MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')
+          
+          if [ "$MSG_ID" == "null" ] || [ -z "$MSG_ID" ]; then
+            echo "Error: Telegram API rejected the message."
+            exit 1
+          fi
+
           echo "START_TIME=$START_TIME" >> $GITHUB_ENV
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
 
@@ -32,8 +41,9 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
+          # Use official Arch Linux Docker container
           docker run --rm -v $PWD:/workspace -w /workspace archlinux:latest /bin/bash -c "
-            # 1. Setup Java 21 (matching original repo)
+            # 1. Install Java 21 and build dependencies
             pacman -Syu --noconfirm base-devel git jdk21-openjdk gstreamer glu hicolor-icon-theme
             useradd -m builder && chown -R builder /workspace
             
@@ -47,9 +57,10 @@ jobs:
             md5sums=('SKIP')
 
             build() {
+              # FIX: Use \$srcdir directly without the leading slash
               cd \"\$srcdir/SimpMusic\"
               
-              # Enable Full Build (Stealed from original YAML)
+              # Enable Full Build flavor from official repo
               echo \"isFullBuild=true\" >> gradle.properties
               
               chmod +x gradlew
@@ -58,17 +69,22 @@ jobs:
 
             package() {
               cd \"\$srcdir/SimpMusic\"
-              # Search in the release folder found in original YAML
-              BINARY_PATH=\$(find composeApp/build/compose/binaries/main-release -type f -executable -name \"SimpMusic\" | head -n 1)
+              # Search for binary in the build binaries output
+              BINARY_PATH=\$(find . -type f -executable -name \"SimpMusic\" | grep \"binaries\" | head -n 1)
+              if [ -z \"\$BINARY_PATH\" ]; then exit 1; fi
               install -Dm755 \"\$BINARY_PATH\" \"\$pkgdir/usr/bin/simpmusic\"
             }
           EOF
             
+            # Build the package as non-root
             su builder -c 'makepkg -fc --noconfirm'
           " 2>&1 | tee build_log.txt
           
-          # Force fail if no package was created
-          ls *.pkg.tar.zst || exit 1
+          # Critical Check: Verify the file exists before finishing
+          if [[ ! -f $(ls *.pkg.tar.zst | head -n 1) ]]; then
+            echo "Build failed to produce package. See build_log.txt"
+            exit 1
+          fi
 
       - name: ✅ Success & Delivery
         if: success()
@@ -84,18 +100,21 @@ jobs:
           
           ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
           curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
-               -F caption="📦 *Artifact: $PROJECT_NAME (Arch)*%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
+               -F caption="📦 *Artifact: $PROJECT_NAME (Arch)*%0A⏱️ Duration: \`${DURATION}m ${SEC_REM}s\`%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
       - name: ❌ Failure Handling
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A❌ *Result:* Compilation error\. Logs attached\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A❌ *Result:* Compilation error\. Logs attached below\."
+          
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
+          if [ -f build_log.txt ]; then
+            curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
                  -F caption="📄 *Error Log: $PROJECT_NAME*" \
                  -F "parse_mode=MarkdownV2" \
                  "https://api.telegram.org/bot$TOKEN/sendDocument"
+          fi
