@@ -7,15 +7,17 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID ID }}
       PROJECT_NAME: "SimpMusic"
+      # Give Java enough RAM to handle Compose compilation
+      GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
     
     steps:
       - name: 🚀 Start & Notify Telegram
         run: |
           START_TIME=$(date +%s)
           RUN_ID="${{ github.run_id }}"
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Setting up Android SDK\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Environment Setup\.\.\."
           
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
@@ -40,25 +42,24 @@ jobs:
 
       - name: 🏗️ Build Android APK
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling APK\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling Android APK\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # Enable Full Build flavor for all features
+          # Unlock Pro Features
           echo "isFullBuild=true" >> gradle.properties
           
           chmod +x gradlew
-          ./gradlew :composeApp:assembleRelease --stacktrace
+          # Run build and save output to build_log.txt
+          ./gradlew clean :composeApp:assembleRelease --stacktrace > build_log.txt 2>&1
 
       - name: 🔐 Process Artifact & MD5
         if: success()
         run: |
-          # Locate the APK
           APK_PATH=$(find composeApp/build/outputs/apk/release -name "*.apk" | head -n 1)
-          cp "$APK_PATH" SimpMusic_Release.apk
+          cp "$APK_PATH" SimpMusic_Build_${{ env.RUN_ID }}.apk
           
-          # Generate MD5
-          MD5_SUM=$(md5sum SimpMusic_Release.apk | awk '{ print $1 }')
+          MD5_SUM=$(md5sum SimpMusic_Build_${{ env.RUN_ID }}.apk | awk '{ print $1 }')
           echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
 
       - name: ✅ Success & Delivery
@@ -71,14 +72,22 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          curl -F "chat_id=$CHAT_ID" -F document=@"SimpMusic_Release.apk" \
+          curl -F "chat_id=$CHAT_ID" -F document=@"SimpMusic_Build_${{ env.RUN_ID }}.apk" \
                -F caption="📱 *SimpMusic Android APK*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
-      - name: ❌ Failure Notification
+      - name: ❌ Failure & Log Delivery
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A❌ *Action:* Check GitHub logs for Gradle errors\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A❌ *Action:* Error logs sent below\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
+          
+          # Send the log file to Telegram
+          if [ -f build_log.txt ]; then
+            curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
+                 -F caption="📄 *Build Error Log: $RUN_ID*" \
+                 -F "parse_mode=MarkdownV2" \
+                 "https://api.telegram.org/bot$TOKEN/sendDocument"
+          fi
