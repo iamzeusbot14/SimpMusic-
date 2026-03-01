@@ -9,7 +9,6 @@ jobs:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       PROJECT_NAME: "SimpMusic"
-      # Give Java enough RAM to handle Compose compilation
       GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
     
     steps:
@@ -18,10 +17,8 @@ jobs:
           START_TIME=$(date +%s)
           RUN_ID="${{ github.run_id }}"
           MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚀 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Environment Setup\.\.\."
-          
           RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
-          
           echo "MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')" >> $GITHUB_ENV
           echo "START_TIME=$START_TIME" >> $GITHUB_ENV
           echo "RUN_ID=$RUN_ID" >> $GITHUB_ENV
@@ -46,11 +43,11 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # Unlock Pro Features
+          # PRO FIX: Ensure SDK path is known to Gradle
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
           echo "isFullBuild=true" >> gradle.properties
           
           chmod +x gradlew
-          # Run build and save output to build_log.txt
           ./gradlew clean :composeApp:assembleRelease --stacktrace > build_log.txt 2>&1
 
       - name: 🔐 Process Artifact & MD5
@@ -58,7 +55,6 @@ jobs:
         run: |
           APK_PATH=$(find composeApp/build/outputs/apk/release -name "*.apk" | head -n 1)
           cp "$APK_PATH" SimpMusic_Build_${{ env.RUN_ID }}.apk
-          
           MD5_SUM=$(md5sum SimpMusic_Build_${{ env.RUN_ID }}.apk | awk '{ print $1 }')
           echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
 
@@ -67,7 +63,6 @@ jobs:
         run: |
           END_TIME=$(date +%s)
           DURATION=$(( (END_TIME - START_TIME) / 60 ))
-          
           MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A✅ *Android Build Finished\!*%0A⏱️ *Time:* \`${DURATION}m\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
@@ -77,16 +72,20 @@ jobs:
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
-      - name: ❌ Failure & Log Delivery
+      - name: ❌ Failure & Error Snippet
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A❌ *Action:* Error logs sent below\."
+          # Extract the last 20 lines of the error to show in Telegram
+          ERROR_SNIPPET=$(tail -n 20 build_log.txt | sed 's/[^a-zA-Z0-9 ]/ /g')
+          
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A%0A*Quick Error Snippet:*%0A\`\`\`%0A$ERROR_SNIPPET%0A\`\`\`"
+          
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
           if [ -f build_log.txt ]; then
             curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
-                 -F caption="📄 *Build Error Log: $RUN_ID*" \
+                 -F caption="📄 *Full Build Log: $RUN_ID*" \
                  -F "parse_mode=MarkdownV2" \
                  "https://api.telegram.org/bot$TOKEN/sendDocument"
           fi
