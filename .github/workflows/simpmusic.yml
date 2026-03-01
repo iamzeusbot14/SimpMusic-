@@ -9,7 +9,7 @@ jobs:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       PROJECT_NAME: "SimpMusic"
-      GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=false"
+      GRADLE_OPTS: "-Xmx4g -Dorg.gradle.daemon=false -Dorg.gradle.vfs.watch=false"
     
     steps:
       - name: 🚀 Start & Notify Telegram
@@ -39,22 +39,28 @@ jobs:
 
       - name: 🏗️ Build Android APK
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Force Compiling Debug APK\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Nuclear Build Mode\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
+          # 1. Force SDK Location
           echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
-          # debug build is less strict than release
+          
+          # 2. DISABLE CACHING (The likely culprit of your crash)
+          echo "org.gradle.configuration-cache=false" >> gradle.properties
+          echo "org.gradle.unsafe.configuration-cache=false" >> gradle.properties
+          echo "isFullBuild=true" >> gradle.properties
+          
           chmod +x gradlew
-          ./gradlew clean :composeApp:assembleDebug --stacktrace > build_log.txt 2>&1
+          # 3. Assemble Debug with absolute stacktrace
+          ./gradlew :composeApp:assembleDebug --no-configuration-cache --stacktrace > build_log.txt 2>&1
 
       - name: 🔐 Process Artifact & MD5
         if: success()
         run: |
-          # Debug APKs are usually in the 'debug' folder
-          APK_PATH=$(find composeApp/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          cp "$APK_PATH" SimpMusic_Debug_${{ env.RUN_ID }}.apk
-          MD5_SUM=$(md5sum SimpMusic_Debug_${{ env.RUN_ID }}.apk | awk '{ print $1 }')
+          APK_PATH=$(find . -name "*.apk" | grep "debug" | head -n 1)
+          cp "$APK_PATH" SimpMusic_Build_${{ env.RUN_ID }}.apk
+          MD5_SUM=$(md5sum SimpMusic_Build_${{ env.RUN_ID }}.apk | awk '{ print $1 }')
           echo "MD5_SUM=$MD5_SUM" >> $GITHUB_ENV
 
       - name: ✅ Success & Delivery
@@ -66,21 +72,23 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          curl -F "chat_id=$CHAT_ID" -F document=@"SimpMusic_Debug_${{ env.RUN_ID }}.apk" \
-               -F caption="📱 *SimpMusic Android APK (Debug)*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`" \
+          curl -F "chat_id=$CHAT_ID" -F document=@"SimpMusic_Build_${{ env.RUN_ID }}.apk" \
+               -F caption="📱 *SimpMusic Android APK*%0A🆔 *Build:* \`$RUN_ID\`%0A🔑 *MD5:* \`$MD5_SUM\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
       - name: ❌ Failure & Log Delivery
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Android Build FAILED\!*%0A❌ *Full Log Attached Below\.*"
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A🚨 *Build FAILED\!*%0A❌ *Full Log Attached Below\.*"
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
           if [ -f build_log.txt ]; then
-            curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
-                 -F caption="📄 *Final Debug Log: $RUN_ID*" \
+            # Filter log to remove binary junk before sending
+            tr -cd '\11\12\15\40-\176' < build_log.txt > clean_log.txt
+            curl -F "chat_id=$CHAT_ID" -F document=@"clean_log.txt" \
+                 -F caption="📄 *Error Log ID: $RUN_ID*" \
                  -F "parse_mode=MarkdownV2" \
                  "https://api.telegram.org/bot$TOKEN/sendDocument"
           fi
