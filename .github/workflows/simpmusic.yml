@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID ID }}
+      CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       PROJECT_NAME: "SimpMusic"
       # Give Java enough RAM to handle Compose compilation
       GRADLE_OPTS: "-Xmx4g -XX:MaxMetaspaceSize=1g -Dorg.gradle.daemon=false"
@@ -84,7 +84,6 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          # Send the log file to Telegram
           if [ -f build_log.txt ]; then
             curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
                  -F caption="📄 *Build Error Log: $RUN_ID*" \
