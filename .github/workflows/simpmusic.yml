@@ -1,6 +1,6 @@
 name: SimpMusic Ultra Pro Builder
 on:
-  workflow_dispatch: # Manual Trigger
+  workflow_dispatch:
 
 jobs:
   build_arch:
@@ -8,17 +8,12 @@ jobs:
     env:
       TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TARGET_URL: "https://github.com/maxrave-dev/SimpMusic.git"
     
     steps:
       - name: 🚀 Start & Notify Telegram
-        id: init
         run: |
-          # Capture start time and metadata
           START_TIME=$(date +%s)
           echo "START_TIME=$START_TIME" >> $GITHUB_ENV
-          
-          # Metadata for message
           USER="${{ github.actor }}"
           RUN_ID="${{ github.run_id }}"
           
@@ -28,63 +23,79 @@ jobs:
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
           echo "MSG_ID=$(echo $RES | jq '.result.message_id')" >> $GITHUB_ENV
 
-      - name: 📥 Stealth Clone
+      - name: 🏗️ Arch Linux Build (With Pro Logging)
         run: |
-          MSG="🚀 *SimpMusic Build Running*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A📊 *Status:* \[▓▓▓░░░░░░░░░░░░░░░░░\] 15%25%0A⚙️ *Stage:* Cloning Source\.\.\."
-          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
-            -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
-          git clone --depth 1 $TARGET_URL src
-
-      - name: 🏗️ Arch Linux Build
-        run: |
-          MSG="🚀 *SimpMusic Build Running*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling with Makepkg\.\.\."
+          MSG="🚀 *SimpMusic Build Running*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
+          # Redirect all output (&>) to build_log.txt while showing it in console (tee)
           docker run --rm -v $PWD:/workspace -w /workspace archlinux:latest /bin/bash -c "
             pacman -Syu --noconfirm base-devel git jdk17-openjdk gstreamer glu hicolor-icon-theme
             useradd -m builder && chown -R builder /workspace
+            
             cat <<EOF > PKGBUILD
             pkgname=simpmusic-git
-            pkgver=$(date +%Y%m%d)
+            pkgver=\$(date +%Y%m%d)
             pkgrel=1
             arch=('x86_64')
-            depends=('java-runtime>=17' 'gstreamer' 'glu') 
+            depends=('java-runtime>=17' 'gstreamer' 'glu')
+            source=('SimpMusic::git+https://github.com/maxrave-dev/SimpMusic.git')
+            md5sums=('SKIP')
             build() {
-              cd src
+              cd \"\$srcdir/SimpMusic\"
               ./gradlew :desktop:packageReleaseDistributionForCurrentOS
             }
             package() {
-              cd src
-              install -Dm755 build/compose/binaries/main/app/SimpMusic \"\$pkgdir/usr/bin/simpmusic\"
+              cd \"\$srcdir/SimpMusic\"
+              BINARY_PATH=\$(find build/compose/binaries/main/app/ -type f -name \"SimpMusic\" | head -n 1)
+              install -Dm755 \"\$BINARY_PATH\" \"\$pkgdir/usr/bin/simpmusic\"
             }
           EOF
-            su builder -c 'makepkg -f --noconfirm'
-          "
+            
+            su builder -c 'makepkg -fc --noconfirm'
+          " 2>&1 | tee build_log.txt
 
       - name: ✅ Success & Delivery
         if: success()
         run: |
-          # Calculate duration
           END_TIME=$(date +%s)
           DURATION=$(( (END_TIME - START_TIME) / 60 ))
           SEC_REM=$(( (END_TIME - START_TIME) % 60 ))
           
-          MSG="✅ *SimpMusic Build Finished\!*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A⏱️ *Time:* \`${DURATION}m ${SEC_REM}s\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25%0A🎁 *Artifact:* Sent below\."
+          MSG="✅ *SimpMusic Build Finished\!*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A⏱️ *Time:* \`${DURATION}m ${SEC_REM}s\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
           
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
           ZST_FILE=$(ls *.pkg.tar.zst)
           curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
-               -F caption="📦 *SimpMusic Arch Linux Build*%0ADuration: \`${DURATION}m ${SEC_REM}s\`" \
+               -F caption="📦 *SimpMusic Arch Build Ready*" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
-      - name: ❌ Failure/Cancel Alert
-        if: failure() || cancelled()
+      - name: ❌ Failure Handling
+        if: failure()
         run: |
-          STATUS="${{ job.status }}"
-          MSG="🚨 *Build ${STATUS^^}*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A❌ *Result:* Something went wrong\. Check logs\."
+          MSG="🚨 *Build FAILED*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A❌ *Result:* Compilation error\. Attached logs below\."
+          
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
+          
+          # Send the log file to Telegram
+          if [ -f build_log.txt ]; then
+            curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
+                 -F caption="📄 *Build Error Logs*" \
+                 -F "parse_mode=MarkdownV2" \
+                 "https://api.telegram.org/bot$TOKEN/sendDocument"
+          fi
+
+      - name: 📦 Upload Artifacts (Success or Failure)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-assets-${{ github.run_id }}
+          path: |
+            *.pkg.tar.zst
+            build_log.txt
+          if-no-files-found: ignore
