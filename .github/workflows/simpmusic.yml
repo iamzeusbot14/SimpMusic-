@@ -1,6 +1,6 @@
 name: SimpMusic Ultra Pro Builder
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual trigger from the Actions tab
 
 jobs:
   build_arch:
@@ -12,24 +12,41 @@ jobs:
     
     steps:
       - name: 🚀 Start & Notify Telegram
+        id: init_step
         run: |
           START_TIME=$(date +%s)
-          echo "START_TIME=$START_TIME" >> $GITHUB_ENV
           USER="${{ github.actor }}"
           RUN_ID="${{ github.run_id }}"
           
+          # Construct the initial message
           MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚀 *Build Triggered* (branch: \`main\`)%0A──────────────────%0A👤 *User:* \`$USER\`%0A🆔 *Build ID:* \`$RUN_ID\`%0A📊 *Status:* \[░░░░░░░░░░░░░░░░░░░░\] 0%25%0A⚙️ *Stage:* Preparing Arch Container\.\.\."
           
-          RES=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
+          # Send message and capture response
+          RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" \
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
-          echo "MSG_ID=$(echo $RES | jq '.result.message_id')" >> $GITHUB_ENV
+          
+          # Extract clean Message ID (no quotes) using jq -r
+          MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')
+          
+          # Validate MSG_ID before proceeding
+          if [ "$MSG_ID" == "null" ] || [ -z "$MSG_ID" ]; then
+            echo "Error: Failed to get Telegram Message ID"
+            exit 1
+          fi
+
+          # Save variables to Environment for next steps
+          echo "START_TIME=$START_TIME" >> $GITHUB_ENV
+          echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
 
       - name: 🏗️ Arch Linux Build
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚀 *Build Running*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling Main Branch\.\.\."
+          # Update Progress to 50%
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚀 *Build Running*%0A──────────────────%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling from Main Branch\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
+          # Use official Arch Linux Docker container
+          # We map the current workspace to /workspace inside the container
           docker run --rm -v $PWD:/workspace -w /workspace archlinux:latest /bin/bash -c "
             pacman -Syu --noconfirm base-devel git jdk17-openjdk gstreamer glu hicolor-icon-theme
             useradd -m builder && chown -R builder /workspace
@@ -39,12 +56,13 @@ jobs:
             pkgver=\$(date +%Y%m%d)
             pkgrel=1
             arch=('x86_64')
-            depends=('java-runtime>=17' 'gstreamer' 'glu')
-            # FORCED BRANCH: main
+            depends=('java-runtime>=17' 'gstreamer' 'glu' 'hicolor-icon-theme')
+            # Fetching specifically from the main branch
             source=('SimpMusic::git+https://github.com/maxrave-dev/SimpMusic.git#branch=main')
             md5sums=('SKIP')
 
             build() {
+              # FIXED: No leading slash before srcdir
               cd \"\$srcdir/SimpMusic\"
               chmod +x gradlew
               ./gradlew :composeApp:packageReleaseDistributionForCurrentOS
@@ -52,47 +70,58 @@ jobs:
 
             package() {
               cd \"\$srcdir/SimpMusic\"
+              # Search for the executable binary in the build binaries output
               BINARY_PATH=\$(find . -type f -executable -name \"SimpMusic\" | grep \"binaries\" | head -n 1)
               if [ -z \"\$BINARY_PATH\" ]; then
-                echo \"ERROR: Could not find binary\!\"
+                echo \"ERROR: Could not find SimpMusic binary\!\"
                 exit 1
               fi
               install -Dm755 \"\$BINARY_PATH\" \"\$pkgdir/usr/bin/simpmusic\"
             }
           EOF
             
+            # Run build as the non-root 'builder' user
             su builder -c 'makepkg -fc --noconfirm'
           " 2>&1 | tee build_log.txt
 
-      - name: ✅ Success & Delivery
+      - name: ✅ Success & Artifact Delivery
         if: success()
         run: |
           END_TIME=$(date +%s)
           DURATION=$(( (END_TIME - START_TIME) / 60 ))
           SEC_REM=$(( (END_TIME - START_TIME) % 60 ))
           
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A✅ *Build Finished\!*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A⏱️ *Time:* \`${DURATION}m ${SEC_REM}s\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25"
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A✅ *Build Finished\!*%0A──────────────────%0A⏱️ *Time:* \`${DURATION}m ${SEC_REM}s\`%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓\] 100%25%0A🎁 *Artifact:* Sending .zst file now\.\.\."
           
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          ZST_FILE=$(ls *.pkg.tar.zst)
+          # Find and send the .zst package
+          ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
           curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
-               -F caption="📦 *Artifact: $PROJECT_NAME (Arch Linux)*%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
+               -F caption="📦 *Artifact: $PROJECT_NAME (Arch Linux)*%0ADuration: \`${DURATION}m ${SEC_REM}s\`%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
       - name: ❌ Failure Handling
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A👤 *User:* \`${{ github.actor }}\`%0A🆔 *Build ID:* \`${{ github.run_id }}\`%0A❌ *Result:* Compilation error\. Logs attached below\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A❌ *Result:* Compilation error occurred\. Logs attached below\."
           
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
+          # Send the log file if it exists
           if [ -f build_log.txt ]; then
             curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
                  -F caption="📄 *Error Log: $PROJECT_NAME*" \
                  -F "parse_mode=MarkdownV2" \
                  "https://api.telegram.org/bot$TOKEN/sendDocument"
           fi
+
+      - name: ⏹️ Cancelled Handling
+        if: cancelled()
+        run: |
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A⏹️ *Build Cancelled*%0A──────────────────%0A⚠️ *Result:* Build was stopped by user \`${{ github.actor }}\`\."
+          curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
+            -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
