@@ -1,4 +1,4 @@
-name: SimpMusic Ultra Pro Builder
+name: SimpMusic Arch Pro Builder
 on:
   workflow_dispatch:
 
@@ -12,7 +12,6 @@ jobs:
     
     steps:
       - name: 🚀 Start & Notify Telegram
-        id: init_step
         run: |
           START_TIME=$(date +%s)
           USER="${{ github.actor }}"
@@ -24,19 +23,18 @@ jobs:
             -d "chat_id=$CHAT_ID&text=$MSG&parse_mode=MarkdownV2")
           
           MSG_ID=$(echo $RESPONSE | jq -r '.result.message_id')
-          
           echo "START_TIME=$START_TIME" >> $GITHUB_ENV
           echo "MSG_ID=$MSG_ID" >> $GITHUB_ENV
 
       - name: 🏗️ Arch Linux Build
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚀 *Build Running*%0A──────────────────%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling Source\.\.\."
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚀 *Build Running*%0A──────────────────%0A📊 *Status:* \[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░\] 50%25%0A⚙️ *Stage:* Compiling \(Java 21 \+ Full Build\)\.\.\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
 
-          # We use a subshell to catch the exit code of the Docker command
           docker run --rm -v $PWD:/workspace -w /workspace archlinux:latest /bin/bash -c "
-            pacman -Syu --noconfirm base-devel git jdk17-openjdk gstreamer glu hicolor-icon-theme
+            # 1. Setup Java 21 (matching original repo)
+            pacman -Syu --noconfirm base-devel git jdk21-openjdk gstreamer glu hicolor-icon-theme
             useradd -m builder && chown -R builder /workspace
             
             cat <<EOF > PKGBUILD
@@ -44,21 +42,24 @@ jobs:
             pkgver=\$(date +%Y%m%d)
             pkgrel=1
             arch=('x86_64')
-            depends=('java-runtime>=17' 'gstreamer' 'glu')
+            depends=('java-runtime>=21' 'gstreamer' 'glu')
             source=('SimpMusic::git+https://github.com/maxrave-dev/SimpMusic.git#branch=main')
             md5sums=('SKIP')
 
             build() {
-              # FIX: Removed leading slash from srcdir
               cd \"\$srcdir/SimpMusic\"
+              
+              # Enable Full Build (Stealed from original YAML)
+              echo \"isFullBuild=true\" >> gradle.properties
+              
               chmod +x gradlew
               ./gradlew :composeApp:packageReleaseDistributionForCurrentOS
             }
 
             package() {
               cd \"\$srcdir/SimpMusic\"
-              BINARY_PATH=\$(find . -type f -executable -name \"SimpMusic\" | grep \"binaries\" | head -n 1)
-              if [ -z \"\$BINARY_PATH\" ]; then exit 1; fi
+              # Search in the release folder found in original YAML
+              BINARY_PATH=\$(find composeApp/build/compose/binaries/main-release -type f -executable -name \"SimpMusic\" | head -n 1)
               install -Dm755 \"\$BINARY_PATH\" \"\$pkgdir/usr/bin/simpmusic\"
             }
           EOF
@@ -66,13 +67,8 @@ jobs:
             su builder -c 'makepkg -fc --noconfirm'
           " 2>&1 | tee build_log.txt
           
-          # Check if the .zst file actually exists. If not, the build failed.
-          if ls *.pkg.tar.zst 1> /dev/null 2>&1; then
-            echo "Build successful."
-          else
-            echo "Build failed. Check build_log.txt"
-            exit 1
-          fi
+          # Force fail if no package was created
+          ls *.pkg.tar.zst || exit 1
 
       - name: ✅ Success & Delivery
         if: success()
@@ -88,21 +84,18 @@ jobs:
           
           ZST_FILE=$(ls *.pkg.tar.zst | head -n 1)
           curl -F "chat_id=$CHAT_ID" -F document=@"$ZST_FILE" \
-               -F caption="📦 *Artifact: $PROJECT_NAME*%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
+               -F caption="📦 *Artifact: $PROJECT_NAME (Arch)*%0AInstall: \`sudo pacman -U $ZST_FILE\`" \
                -F "parse_mode=MarkdownV2" \
                "https://api.telegram.org/bot$TOKEN/sendDocument"
 
       - name: ❌ Failure Handling
         if: failure()
         run: |
-          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A❌ *Result:* Compilation error\. Logs attached below\."
-          
+          MSG="📦 *Project:* \`$PROJECT_NAME\`%0A🚨 *Build FAILED*%0A──────────────────%0A❌ *Result:* Compilation error\. Logs attached\."
           curl -s -X POST "https://api.telegram.org/bot$TOKEN/editMessageText" \
             -d "chat_id=$CHAT_ID&message_id=$MSG_ID&text=$MSG&parse_mode=MarkdownV2"
           
-          if [ -f build_log.txt ]; then
-            curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
+          [ -f build_log.txt ] && curl -F "chat_id=$CHAT_ID" -F document=@"build_log.txt" \
                  -F caption="📄 *Error Log: $PROJECT_NAME*" \
                  -F "parse_mode=MarkdownV2" \
                  "https://api.telegram.org/bot$TOKEN/sendDocument"
-          fi
